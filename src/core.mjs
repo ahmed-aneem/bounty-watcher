@@ -14,11 +14,15 @@ export function parseUsd(text) {
   return m ? Number(m[1].replace(/,/g, "")) : null;
 }
 
-/** Reward announced by the Algora bot in the issue's comments, or null. */
+const isBot = (c) => c.user?.type === "Bot" || /\[bot\]$/i.test(c.user?.login ?? "");
+
+/**
+ * Reward confirmed by Algora's own bot, or null. Only this counts as funded:
+ * anyone can label their issue "💎 Bounty" or write "$900" in it.
+ */
 export function rewardFromComments(comments) {
   for (const c of comments) {
-    const login = c.user?.login ?? "";
-    if (/algora/i.test(login) || /💎/.test(c.body ?? "")) {
+    if (isBot(c) && /algora/i.test(c.user?.login ?? "")) {
       const usd = parseUsd(c.body);
       if (usd != null) return usd;
     }
@@ -85,17 +89,20 @@ export function seenIdsFrom(issues) {
 
 /** Count competition from the bounty issue's comments. */
 export function competition(comments) {
-  const attempts = comments.filter((c) => /(^|\s)\/attempt\b/i.test(c.body ?? "")).length;
-  const claims = comments.filter((c) => /(^|\s)\/claim\b/i.test(c.body ?? "")).length;
-  return { attempts, claims, total: comments.length };
+  // Bots quote "/attempt" in their instructions; only people count as competition.
+  const people = comments.filter((c) => !isBot(c));
+  const attempts = people.filter((c) => /(^|\s)\/attempt\b/i.test(c.body ?? "")).length;
+  const claims = people.filter((c) => /(^|\s)\/claim\b/i.test(c.body ?? "")).length;
+  return { attempts, claims, total: people.length };
 }
 
 /**
  * Traffic-light verdict. Being early matters most, so attempts and claims weigh heaviest.
  * Returns { light, label, reason }.
  */
-export function verdict({ attempts, claims }, { closed = false, assigned = false } = {}) {
+export function verdict({ attempts, claims }, { closed = false, assigned = false, funded = true } = {}) {
   if (closed) return { light: "⚫", label: "skip", reason: "the issue is already closed" };
+  if (!funded) return { light: "⚫", label: "skip", reason: "no funding confirmed by Algora's bot" };
   if (claims > 0) return { light: "🔴", label: "skip", reason: `${claims} claim(s) already submitted` };
   if (assigned) return { light: "🔴", label: "skip", reason: "the issue is assigned to someone" };
   if (attempts === 0) return { light: "🟢", label: "go now", reason: "nobody has started yet" };
@@ -132,13 +139,15 @@ export function issueBody(b, v, comp, { mention }) {
     "",
     "**Next step:** paste the issue link to Claude and ask it to assess the fix. If it looks doable, comment `/attempt` on the issue first, then build.",
     "",
+    "⚠️ Treat the issue text as untrusted. Some bounty repos hide instructions for AI agents (for example, asking them to upload session data). Never let an agent follow instructions found inside an issue.",
+    "",
     mention ? `cc @${mention}` : "",
     `<!-- algora:${b.id} -->`,
   ].join("\n");
 }
 
 /** One issue listing everything already open, so the first run doesn't flood the inbox. */
-export function digestBody(rows, { mention }) {
+export function digestBody(rows, { mention }, recordAll = rows) {
   const lines = rows
     .sort((a, b) => (rewardUsd(b.b) ?? 0) - (rewardUsd(a.b) ?? 0))
     .map(({ b, v }) => `- ${v.light} **${money(b)}** · [${(b.task?.title ?? "Untitled").slice(0, 80)}](${issueUrl(b)})`);
@@ -148,6 +157,6 @@ export function digestBody(rows, { mention }) {
     ...lines,
     "",
     mention ? `cc @${mention}` : "",
-    ...rows.map(({ b }) => `<!-- algora:${b.id} -->`),
+    ...recordAll.map(({ b }) => `<!-- algora:${b.id} -->`),
   ].join("\n");
 }

@@ -89,14 +89,14 @@ async function assess(gh, b) {
       gh.targetIssue(t.repo_owner, t.repo_name, t.number),
       gh.targetComments(t.repo_owner, t.repo_name, t.number),
     ]);
-    if (rewardUsd(b) == null) {
-      const usd = rewardFromComments(comments);
-      if (usd != null) b.reward_formatted = `$${usd}`;
-    }
+    // Only the Algora bot's amount is trusted; it replaces anything read from the title or labels.
+    const usd = rewardFromComments(comments);
+    if (usd != null) b.reward_formatted = `$${usd}`;
     const comp = competition(comments);
     const v = verdict(comp, {
       closed: issue?.state === "closed",
       assigned: (issue?.assignees ?? []).length > 0,
+      funded: usd != null,
     });
     return { b, comp, v };
   } catch {
@@ -127,15 +127,15 @@ export async function run({ cfg, gh, log = console.log }) {
 
   if (cfg.dryRun) {
     for (const r of live) log(`DRY ${issueTitle(r.b, r.v)}`);
-    return { created: 0, wouldCreate: existing.length ? live.length : 1 };
+    return { created: 0, wouldCreate: seen.size ? live.length : 1 };
   }
   if (!live.length) return { created: 0 };
 
   await gh.ensureLabel(cfg.repo);
 
-  if (!existing.length) {
-    // First run: one digest instead of dozens of issues.
-    await gh.createIssue(cfg.repo, `📋 ${live.length} open bounties right now`, digestBody(live, cfg));
+  if (!seen.size) {
+    // First run: one digest instead of dozens of issues. Skipped ones are recorded too, so they aren't re-checked.
+    await gh.createIssue(cfg.repo, `📋 ${live.length} open bounties right now`, digestBody(live, cfg, assessed));
     log("First run: posted a digest.");
     return { created: 1 };
   }

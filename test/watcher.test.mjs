@@ -29,13 +29,22 @@ test("reward parsing", () => {
   assert.equal(parseUsd("no money here"), null);
 });
 
-test("reward is read from the Algora bot comment", () => {
+test("reward is trusted only from the Algora bot", () => {
   const comments = [
-    { user: { login: "someone" }, body: "I'd do it for $20" },
-    { user: { login: "algora-pbc[bot]" }, body: "## 💎 $500 bounty • Acme\n### Steps to solve:" },
+    { user: { login: "someone" }, body: "💎 I'd do it for $20" },
+    { user: { login: "algora-pbc[bot]", type: "Bot" }, body: "## 💎 $500 bounty • Acme\n### Steps to solve:" },
   ];
   assert.equal(rewardFromComments(comments), 500);
-  assert.equal(rewardFromComments([{ user: { login: "x" }, body: "hi" }]), null);
+  assert.equal(rewardFromComments([{ user: { login: "x" }, body: "/bounty $900 💎" }]), null);
+  assert.equal(rewardFromComments([{ user: { login: "other-bot[bot]" }, body: "$900" }]), null);
+});
+
+test("the bot's own /attempt instructions don't count as competition", () => {
+  const c = competition([
+    { user: { login: "algora-pbc[bot]", type: "Bot" }, body: "Comment `/attempt #3` to start. Submit with `/claim #3`." },
+    { user: { login: "dev1" }, body: "/attempt #3" },
+  ]);
+  assert.deepEqual(c, { attempts: 1, claims: 0, total: 1 });
 });
 
 test("search items map to bounties, with a reward from labels or title when present", () => {
@@ -94,7 +103,7 @@ function fakeGh({ ours = [], search = { typescript: [], javascript: [] }, target
     ourIssues: async () => [...ours, ...created],
     ensureLabel: async () => {},
     targetIssue: async (o, n, num) => targets[num]?.issue ?? { state: "open", assignees: [] },
-    targetComments: async (o, n, num) => targets[num]?.comments ?? [{ user: { login: "algora-pbc[bot]" }, body: "💎 $200 bounty" }],
+    targetComments: async (o, n, num) => targets[num]?.comments ?? [{ user: { login: "algora-pbc[bot]", type: "Bot" }, body: "💎 $200 bounty" }],
     createIssue: async (repo, title, body) => { created.push({ title, body }); return {}; },
   };
 }
@@ -143,6 +152,23 @@ test("closed and too-small bounties are not announced; unreadable ones are, for 
   const r = await run({ cfg, gh, log: () => {} });
   assert.equal(r.created, 1);
   assert.match(gh.created[0].title, /^⚪ \$\? · /);
+});
+
+test("self-declared bounties without Algora funding are never announced, but are recorded", async () => {
+  const gh = fakeGh({
+    search: { typescript: [searchItem(10, { title: "[$900] Fix bridge" }), searchItem(11)] },
+    targets: { 10: { comments: [{ user: { login: "owner" }, body: "/bounty $900" }] } },
+  });
+  assert.equal((await run({ cfg, gh, log: () => {} })).created, 1);
+  assert.match(gh.created[0].title, /1 open bounties/);
+  assert.match(gh.created[0].body, /algora:gh-9010/); // recorded so it isn't re-checked
+  assert.doesNotMatch(gh.created[0].body, /Fix bridge/);
+});
+
+test("a digest is posted whenever nothing has been recorded yet, even if other issues exist", async () => {
+  const gh = fakeGh({ ours: [{ body: "old digest, markers removed" }], search: { typescript: [searchItem(12)] } });
+  await run({ cfg, gh, log: () => {} });
+  assert.match(gh.created[0].title, /open bounties right now/);
 });
 
 test("dry run posts nothing", async () => {
