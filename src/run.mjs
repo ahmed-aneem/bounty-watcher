@@ -36,10 +36,13 @@ export async function fetchBounties(list, orgs, log = console.log) {
     return out;
   };
   try {
-    return await pages({});
+    const global = await pages({});
+    // An empty global list usually means the API wants an org, not that there are no bounties.
+    if (global.length || !orgs.length) return global;
+    throw new Error("global list returned nothing");
   } catch (e) {
     if (!orgs.length) throw new Error(`Algora list failed and ALGORA_ORGS is empty: ${e.message}`);
-    log(`Global list failed (${e.message}); falling back to ${orgs.length} orgs.`);
+    log(`Global list unusable (${e.message}); falling back to ${orgs.length} orgs.`);
     const all = [];
     let failed = 0;
     for (const org of orgs) {
@@ -159,6 +162,8 @@ export async function run({ cfg, list, gh, log = console.log }) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { algora } = await import("@algora/sdk");
   const cfg = config();
-  run({ cfg, list: (p) => algora.bounty.list.query(p), gh: githubClient(cfg.token) })
+  // "::notice::" lines become annotations on the run page, readable without opening logs.
+  const log = (msg) => console.log(process.env.GITHUB_ACTIONS ? `::notice::${msg}` : msg);
+  run({ cfg, list: (p) => algora.bounty.list.query(p), gh: githubClient(cfg.token), log })
     .catch((e) => { console.error(e.message); process.exit(1); });
 }

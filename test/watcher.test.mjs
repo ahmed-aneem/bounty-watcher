@@ -69,6 +69,12 @@ test("pagination follows next_cursor and stops", async () => {
   assert.deepEqual(calls, [null, "c1"]);
 });
 
+test("an empty global list falls back to orgs", async () => {
+  const list = async (p) => ({ items: p.org ? [bounty(p.org + "1")] : [] });
+  const out = await fetchBounties(list, ["acme"], () => {});
+  assert.deepEqual(out.map((b) => b.id), ["acme1"]);
+});
+
 test("fails loudly when Algora is unreachable", async () => {
   const list = async () => { throw new Error("fetch failed"); };
   await assert.rejects(fetchBounties(list, ["a", "b"], () => {}), /unreachable/);
