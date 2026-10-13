@@ -2,7 +2,7 @@ name: Watch Algora bounties
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may delay runs a few minutes at busy times)
+    - cron: "7,22,37,52 * * * *"   # every 15 minutes, off the busy :00/:15 marks where GitHub drops runs
   workflow_dispatch:          # lets you run it by hand from the Actions tab
 
 permissions:
