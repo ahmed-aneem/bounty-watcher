@@ -8,9 +8,6 @@
     "start": "node src/run.mjs",
     "test": "node --test test/*.test.mjs"
   },
-  "dependencies": {
-    "@algora/sdk": "0.3.1"
-  },
   "engines": {
     "node": ">=20"
   }

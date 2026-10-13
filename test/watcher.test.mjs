@@ -1,43 +1,67 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  rewardUsd, filterBounties, seenIdsFrom, competition, verdict, issueTitle, issueBody,
+  rewardUsd, parseUsd, rewardFromComments, fromSearchItem, filterBounties,
+  seenIdsFrom, competition, verdict, issueTitle, issueBody,
 } from "../src/core.mjs";
 import { run, fetchBounties, config } from "../src/run.mjs";
 
 const NOW = Date.parse("2026-10-14T00:00:00Z");
 const bounty = (id, over = {}) => ({
-  id, status: "active", reward_type: "cash",
-  reward: { amount: 25000, currency: "USD" }, reward_formatted: "$250",
-  created_at: new Date("2026-10-13T20:00:00Z"),
-  org: { handle: "acme", tech: ["TypeScript"] },
-  task: { repo_owner: "acme", repo_name: "app", number: Number(id.replace(/\D/g, "")) || 1, title: `Fix ${id}`, url: `https://github.com/acme/app/issues/${id}` },
+  id, status: "active", reward_type: "cash", reward_formatted: "$250",
+  created_at: "2026-10-13T20:00:00Z", tech: ["typescript"],
+  task: { repo_owner: "acme", repo_name: "app", number: Number(String(id).replace(/\D/g, "")) || 1, title: `Fix ${id}`, url: `https://github.com/acme/app/issues/${id}` },
   ...over,
 });
-
-test("reward converts cents and falls back to the formatted string", () => {
-  assert.equal(rewardUsd(bounty("a")), 250);
-  assert.equal(rewardUsd({ reward: null, reward_formatted: "$1,500" }), 1500);
-  assert.equal(rewardUsd({}), 0);
+// A GitHub search result, as the API returns it.
+const searchItem = (n, over = {}) => ({
+  id: 9000 + n, number: n, title: `Issue ${n}`, created_at: "2026-10-13T20:00:00Z",
+  html_url: `https://github.com/acme/app/issues/${n}`,
+  repository_url: "https://api.github.com/repos/acme/app",
+  labels: [{ name: "💎 Bounty" }], ...over,
 });
 
-test("filter keeps matching cash bounties and drops the rest", () => {
+test("reward parsing", () => {
+  assert.equal(rewardUsd({ reward: { amount: 25000 } }), 250);
+  assert.equal(rewardUsd({ reward_formatted: "$1,500" }), 1500);
+  assert.equal(rewardUsd({}), null);
+  assert.equal(parseUsd("💎 $2,000 bounty • acme"), 2000);
+  assert.equal(parseUsd("no money here"), null);
+});
+
+test("reward is read from the Algora bot comment", () => {
+  const comments = [
+    { user: { login: "someone" }, body: "I'd do it for $20" },
+    { user: { login: "algora-pbc[bot]" }, body: "## 💎 $500 bounty • Acme\n### Steps to solve:" },
+  ];
+  assert.equal(rewardFromComments(comments), 500);
+  assert.equal(rewardFromComments([{ user: { login: "x" }, body: "hi" }]), null);
+});
+
+test("search items map to bounties, with a reward from labels or title when present", () => {
+  const b = fromSearchItem(searchItem(7, { labels: [{ name: "💎 Bounty" }, { name: "$300" }] }), "typescript");
+  assert.equal(b.id, "gh-9007");
+  assert.deepEqual(b.task, { repo_owner: "acme", repo_name: "app", number: 7, title: "Issue 7", url: "https://github.com/acme/app/issues/7" });
+  assert.equal(rewardUsd(b), 300);
+  assert.equal(rewardUsd(fromSearchItem(searchItem(8, { title: "[$150] Add export" }), "typescript")), 150);
+  assert.equal(rewardUsd(fromSearchItem(searchItem(9), "typescript")), null);
+});
+
+test("filter drops known-small, wrong-tech and old bounties; keeps unknown rewards", () => {
   const items = [
     bounty("keep"),
-    bounty("rust", { org: { tech: ["Rust"] } }),
-    bounty("small", { reward: { amount: 2000 } }),
-    bounty("points", { reward_type: "point" }),
-    bounty("inactive", { status: "inactive" }),
-    bounty("untagged", { org: { tech: [] } }),
-    bounty("old", { created_at: new Date("2026-01-01") }),
+    bounty("unknown", { reward_formatted: null }),
+    bounty("small", { reward_formatted: "$20" }),
+    bounty("rust", { tech: ["rust"] }),
+    bounty("old", { created_at: "2026-01-01T00:00:00Z" }),
   ];
   const kept = filterBounties(items, { tech: ["typescript"], minUsd: 50, maxAgeDays: 30, now: NOW }).map((b) => b.id);
-  assert.deepEqual(kept, ["keep", "untagged"]);
+  assert.deepEqual(kept, ["keep", "unknown"]);
 });
 
 test("seen ids come from hidden markers, including digests", () => {
-  const seen = seenIdsFrom([{ body: "x <!-- algora:a1 -->" }, { body: "<!-- algora:b2 -->\n<!-- algora:c3 -->" }, { body: null }]);
-  assert.deepEqual([...seen].sort(), ["a1", "b2", "c3"]);
+  const seen = seenIdsFrom([{ body: "x <!-- algora:gh-1 -->" }, { body: "<!-- algora:gh-2 -->\n<!-- algora:gh-3 -->" }, { body: null }]);
+  assert.deepEqual([...seen].sort(), ["gh-1", "gh-2", "gh-3"]);
 });
 
 test("competition and verdict", () => {
@@ -51,90 +75,79 @@ test("competition and verdict", () => {
   assert.equal(verdict({ attempts: 0, claims: 0 }, { closed: true }).light, "⚫");
 });
 
-test("issue text carries the marker and the link", () => {
-  const b = bounty("x9");
+test("issue text carries the marker, the link and an unknown-safe reward", () => {
   const v = verdict({ attempts: 0, claims: 0 });
-  assert.match(issueTitle(b, v), /^🟢 \$250 · acme\/app · Fix x9$/);
-  const body = issueBody(b, v, { attempts: 0, claims: 0, total: 0 }, { mention: "habibdxb01" });
+  assert.match(issueTitle(bounty("x9"), v), /^🟢 \$250 · acme\/app · Fix x9$/);
+  assert.match(issueTitle(bounty("x8", { reward_formatted: null }), v), /^🟢 \$\? · /);
+  const body = issueBody(bounty("x9"), v, { attempts: 0, claims: 0, total: 0 }, { mention: "habibdxb01" });
   assert.match(body, /<!-- algora:x9 -->/);
   assert.match(body, /https:\/\/github\.com\/acme\/app\/issues\/x9/);
   assert.match(body, /cc @habibdxb01/);
 });
 
-test("pagination follows next_cursor and stops", async () => {
-  const calls = [];
-  const list = async (p) => { calls.push(p.cursor ?? null); return p.cursor ? { items: [bounty("b")] } : { items: [bounty("a")], next_cursor: "c1" }; };
-  const out = await fetchBounties(list, [], () => {});
-  assert.deepEqual(out.map((b) => b.id), ["a", "b"]);
-  assert.deepEqual(calls, [null, "c1"]);
-});
-
-test("an empty global list falls back to orgs", async () => {
-  const list = async (p) => ({ items: p.org ? [bounty(p.org + "1")] : [] });
-  const out = await fetchBounties(list, ["acme"], () => {});
-  assert.deepEqual(out.map((b) => b.id), ["acme1"]);
-});
-
-test("fails loudly when Algora is unreachable", async () => {
-  const list = async () => { throw new Error("fetch failed"); };
-  await assert.rejects(fetchBounties(list, ["a", "b"], () => {}), /unreachable/);
-});
-
-test("falls back to per-org listing when the global list fails", async () => {
-  const list = async (p) => { if (!p.org) throw new Error("org required"); if (p.org === "bad") throw new Error("nope"); return { items: [bounty(p.org + "1")] }; };
-  const out = await fetchBounties(list, ["acme", "bad", "beta"], () => {});
-  assert.deepEqual(out.map((b) => b.id), ["acme1", "beta1"]);
-});
-
 // Fake GitHub that records what would be posted.
-function fakeGh({ ours = [], targets = {} } = {}) {
+function fakeGh({ ours = [], search = { typescript: [], javascript: [] }, targets = {} } = {}) {
   const created = [];
   return {
     created,
+    searchBounties: async (lang) => search[lang] ?? [],
     ourIssues: async () => [...ours, ...created],
     ensureLabel: async () => {},
     targetIssue: async (o, n, num) => targets[num]?.issue ?? { state: "open", assignees: [] },
-    targetComments: async (o, n, num) => targets[num]?.comments ?? [],
+    targetComments: async (o, n, num) => targets[num]?.comments ?? [{ user: { login: "algora-pbc[bot]" }, body: "💎 $200 bounty" }],
     createIssue: async (repo, title, body) => { created.push({ title, body }); return {}; },
   };
 }
 const cfg = config({ GITHUB_REPOSITORY: "habibdxb01/bounty-watcher", GITHUB_TOKEN: "t" });
 
-test("first run posts one digest, second run posts only new bounties", async () => {
-  const gh = fakeGh();
-  let items = [bounty("1"), bounty("2")];
-  const list = async () => ({ items });
-  const first = await run({ cfg, list, gh, log: () => {} });
-  assert.equal(first.created, 1);
-  assert.match(gh.created[0].title, /2 open bounties/);
-
-  // Nothing new → nothing posted.
-  assert.equal((await run({ cfg, list, gh, log: () => {} })).created, 0);
-
-  // One new bounty, with competition.
-  items = [...items, bounty("3")];
-  gh.created.length; // keep digest in "ours"
-  const targets = { 3: { comments: [{ body: "/attempt #3" }] } };
-  const gh2 = fakeGh({ ours: gh.created, targets });
-  const third = await run({ cfg, list, gh: gh2, log: () => {} });
-  assert.equal(third.created, 1);
-  assert.match(gh2.created[0].title, /^🟡 \$250 · acme\/app · Fix 3$/);
+test("search results across languages are de-duplicated", async () => {
+  const gh = fakeGh({ search: { typescript: [searchItem(1), searchItem(2)], javascript: [searchItem(2), searchItem(3)] } });
+  const out = await fetchBounties(gh, ["typescript", "javascript"]);
+  assert.deepEqual(out.map((b) => b.id), ["gh-9001", "gh-9002", "gh-9003"]);
 });
 
-test("closed issues are never announced; read errors still announce for a manual check", async () => {
-  const ours = [{ body: "<!-- algora:0 -->" }];
-  const targets = { 5: { issue: { state: "closed", assignees: [] } } };
-  const gh = fakeGh({ ours, targets });
-  gh.targetComments = async (o, n, num) => { if (num === 6) throw new Error("rate limited"); return []; };
-  const list = async () => ({ items: [bounty("5"), bounty("6")] });
-  const r = await run({ cfg, list, gh, log: () => {} });
+test("a failed search fails the run instead of reporting zero", async () => {
+  const gh = fakeGh();
+  gh.searchBounties = async () => { throw new Error("GitHub GET /search/issues → 403"); };
+  await assert.rejects(run({ cfg, gh, log: () => {} }), /403/);
+});
+
+test("first run posts one digest, later runs post only new bounties", async () => {
+  const gh = fakeGh({ search: { typescript: [searchItem(1), searchItem(2)] } });
+  assert.equal((await run({ cfg, gh, log: () => {} })).created, 1);
+  assert.match(gh.created[0].title, /2 open bounties/);
+  assert.match(gh.created[0].body, /\$200/);
+
+  assert.equal((await run({ cfg, gh, log: () => {} })).created, 0);
+
+  const gh2 = fakeGh({
+    ours: gh.created,
+    search: { typescript: [searchItem(1), searchItem(2), searchItem(3)] },
+    targets: { 3: { comments: [{ user: { login: "algora-pbc[bot]" }, body: "💎 $400 bounty" }, { body: "/attempt #3" }] } },
+  });
+  assert.equal((await run({ cfg, gh: gh2, log: () => {} })).created, 1);
+  assert.match(gh2.created[0].title, /^🟡 \$400 · acme\/app · Issue 3$/);
+});
+
+test("closed and too-small bounties are not announced; unreadable ones are, for a manual check", async () => {
+  const gh = fakeGh({
+    ours: [{ body: "<!-- algora:seed -->" }],
+    search: { typescript: [searchItem(5), searchItem(6), searchItem(7)] },
+    targets: {
+      5: { issue: { state: "closed", assignees: [] } },
+      6: { comments: [{ user: { login: "algora-pbc[bot]" }, body: "💎 $25 bounty" }] },
+    },
+  });
+  const realComments = gh.targetComments;
+  gh.targetComments = async (o, n, num) => { if (num === 7) throw new Error("rate limited"); return realComments(o, n, num); };
+  const r = await run({ cfg, gh, log: () => {} });
   assert.equal(r.created, 1);
-  assert.match(gh.created[0].title, /^⚪ /);
+  assert.match(gh.created[0].title, /^⚪ \$\? · /);
 });
 
 test("dry run posts nothing", async () => {
-  const gh = fakeGh({ ours: [{ body: "<!-- algora:0 -->" }] });
-  const r = await run({ cfg: { ...cfg, dryRun: true }, list: async () => ({ items: [bounty("7")] }), gh, log: () => {} });
+  const gh = fakeGh({ ours: [{ body: "<!-- algora:seed -->" }], search: { typescript: [searchItem(8)] } });
+  const r = await run({ cfg: { ...cfg, dryRun: true }, gh, log: () => {} });
   assert.equal(gh.created.length, 0);
   assert.equal(r.wouldCreate, 1);
 });

@@ -1,6 +1,6 @@
 # Bounty Watcher
 
-Every 15 minutes this checks [Algora](https://algora.io/bounties) for new cash bounties in your stack. For each new one it opens an issue in this repo, which GitHub sends to your email and the GitHub mobile app.
+Every 15 minutes this looks for new [Algora](https://algora.io/bounties) bounties in your stack. Algora labels every bounty issue `💎 Bounty` on GitHub, so the watcher uses GitHub search and reads the reward from Algora's bot comment. For each new bounty it opens an issue in this repo, which GitHub sends to your email and the GitHub mobile app.
 
 Each issue carries a traffic light, so you can decide from your phone in seconds:
 
@@ -26,9 +26,8 @@ Change these under **Settings → Secrets and variables → Actions → Variable
 
 | Variable | Default | What it does |
 |---|---|---|
-| `TECH` | `typescript,javascript` | Tags to match, comma-separated. Untagged bounties are always shown. |
-| `MIN_USD` | `50` | Smallest reward worth a notification |
-| `ALGORA_ORGS` | a list of known bounty orgs | Only used if Algora's global list ever requires an org. Unknown names are skipped. |
+| `TECH` | `typescript,javascript` | Repository languages to search, comma-separated (GitHub's language names, e.g. `rust`, `python`) |
+| `MIN_USD` | `50` | Smallest reward worth a notification. Bounties whose reward can't be read are still shown as `$?`. |
 
 ## When a 🟢 issue arrives
 
@@ -41,5 +40,6 @@ Change these under **Settings → Secrets and variables → Actions → Variable
 ## Good to know
 
 - GitHub pauses scheduled workflows in repos with no commits for 60 days. It emails you first; re-enable with one click in the Actions tab.
-- If Algora is unreachable, the run fails and GitHub emails you, instead of silently reporting zero bounties.
+- If GitHub search fails, the run fails and GitHub emails you, instead of silently reporting zero bounties.
+- Each run's counts appear as notes on the run page in the Actions tab.
 - Tests: `npm test`.

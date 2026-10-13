@@ -2,11 +2,43 @@
 
 export const MARKER_RE = /<!--\s*algora:([A-Za-z0-9_-]+)\s*-->/g;
 
-/** Reward in whole US dollars (Algora stores cents). */
+/** Reward in whole US dollars, or null when unknown. */
 export function rewardUsd(b) {
   if (b?.reward?.amount != null) return Math.round(b.reward.amount / 100);
-  const m = /\$?\s*([\d,]+)/.exec(b?.reward_formatted ?? "");
-  return m ? Number(m[1].replace(/,/g, "")) : 0;
+  return parseUsd(b?.reward_formatted ?? "");
+}
+
+/** First "$1,500"-style amount in a piece of text, or null. */
+export function parseUsd(text) {
+  const m = /\$\s?([\d,]+)(?:\.\d+)?/.exec(text ?? "");
+  return m ? Number(m[1].replace(/,/g, "")) : null;
+}
+
+/** Reward announced by the Algora bot in the issue's comments, or null. */
+export function rewardFromComments(comments) {
+  for (const c of comments) {
+    const login = c.user?.login ?? "";
+    if (/algora/i.test(login) || /💎/.test(c.body ?? "")) {
+      const usd = parseUsd(c.body);
+      if (usd != null) return usd;
+    }
+  }
+  return null;
+}
+
+/** Turn a GitHub search result into the bounty shape the rest of the code uses. */
+export function fromSearchItem(item, lang) {
+  const [owner, name] = item.repository_url.replace("https://api.github.com/repos/", "").split("/");
+  const labelReward = (item.labels ?? []).map((l) => parseUsd(l.name)).find((v) => v != null);
+  return {
+    id: `gh-${item.id}`,
+    status: "active",
+    reward_type: "cash",
+    reward_formatted: labelReward != null ? `$${labelReward}` : parseUsd(item.title) != null ? `$${parseUsd(item.title)}` : null,
+    created_at: item.created_at,
+    tech: [lang],
+    task: { repo_owner: owner, repo_name: name, number: item.number, title: item.title, url: item.html_url },
+  };
 }
 
 /** Tech tags for a bounty, lower-cased. Newer API puts them on the bounty, older on the org. */
@@ -29,7 +61,9 @@ export function filterBounties(items, { tech, minUsd, maxAgeDays, now = Date.now
   return items.filter((b) => {
     if (b.status && b.status !== "active") return false;
     if (b.reward_type && b.reward_type !== "cash") return false;
-    if (rewardUsd(b) < minUsd) return false;
+    // Unknown rewards pass here; the reward is read from the issue later and checked again.
+    const usd = rewardUsd(b);
+    if (usd != null && usd < minUsd) return false;
     if (!issueUrl(b)) return false;
     const tags = techOf(b);
     // Untagged bounties are kept: missing tags are common and filtering them hides real work.
@@ -73,7 +107,12 @@ export function issueTitle(b, v) {
   const t = b.task ?? {};
   const repo = t.repo_owner && t.repo_name ? `${t.repo_owner}/${t.repo_name}` : b.org?.handle ?? "unknown";
   const title = (t.title ?? "Untitled").slice(0, 90);
-  return `${v.light} $${rewardUsd(b)} · ${repo} · ${title}`;
+  return `${v.light} ${money(b)} · ${repo} · ${title}`;
+}
+
+function money(b) {
+  const usd = rewardUsd(b);
+  return usd == null ? "$?" : `$${usd}`;
 }
 
 export function issueBody(b, v, comp, { mention }) {
@@ -85,7 +124,7 @@ export function issueBody(b, v, comp, { mention }) {
     "",
     `| | |`,
     `|---|---|`,
-    `| Reward | **$${rewardUsd(b)}** |`,
+    `| Reward | **${money(b)}** |`,
     `| Issue | ${url} |`,
     `| Tech | ${tags} |`,
     `| Posted | ${posted} |`,
@@ -101,8 +140,8 @@ export function issueBody(b, v, comp, { mention }) {
 /** One issue listing everything already open, so the first run doesn't flood the inbox. */
 export function digestBody(rows, { mention }) {
   const lines = rows
-    .sort((a, b) => rewardUsd(b.b) - rewardUsd(a.b))
-    .map(({ b, v }) => `- ${v.light} **$${rewardUsd(b)}** · [${(b.task?.title ?? "Untitled").slice(0, 80)}](${issueUrl(b)})`);
+    .sort((a, b) => (rewardUsd(b.b) ?? 0) - (rewardUsd(a.b) ?? 0))
+    .map(({ b, v }) => `- ${v.light} **${money(b)}** · [${(b.task?.title ?? "Untitled").slice(0, 80)}](${issueUrl(b)})`);
   return [
     "Bounties that were already open when the watcher started. From now on, each new one gets its own issue.",
     "",

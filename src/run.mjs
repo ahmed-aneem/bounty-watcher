@@ -1,12 +1,12 @@
-// Polls Algora for new cash bounties and opens one GitHub issue per new bounty in this repo.
-// GitHub then notifies you by email and in the GitHub mobile app.
+// Finds new Algora bounties through GitHub search (Algora labels every bounty issue "💎 Bounty")
+// and opens one issue per new bounty in this repo. GitHub then notifies you by email and the mobile app.
 import {
-  filterBounties, seenIdsFrom, competition, verdict,
-  issueTitle, issueBody, digestBody,
+  filterBounties, seenIdsFrom, competition, verdict, rewardUsd,
+  rewardFromComments, fromSearchItem, issueTitle, issueBody, digestBody,
 } from "./core.mjs";
 
 const LABEL = "bounty";
-const MAX_PAGES = 5;
+const BOUNTY_LABEL = "💎 Bounty";
 
 export function config(env = process.env) {
   const repo = env.GITHUB_REPOSITORY ?? "";
@@ -16,43 +16,9 @@ export function config(env = process.env) {
     tech: (env.TECH || "typescript,javascript").split(",").map((s) => s.trim()).filter(Boolean),
     minUsd: Number(env.MIN_USD || 50),
     maxAgeDays: Number(env.MAX_AGE_DAYS || 0),
-    orgs: (env.ALGORA_ORGS || "").split(",").map((s) => s.trim()).filter(Boolean),
     mention: env.MENTION || repo.split("/")[0] || "",
     dryRun: env.DRY_RUN === "1",
   };
-}
-
-/** All active bounties. Tries the global list first; falls back to a per-org list if the API wants an org. */
-export async function fetchBounties(list, orgs, log = console.log) {
-  const pages = async (params) => {
-    const out = [];
-    let cursor;
-    for (let p = 0; p < MAX_PAGES; p++) {
-      const r = await list({ ...params, status: "active", limit: 100, ...(cursor ? { cursor } : {}) });
-      out.push(...(r?.items ?? []));
-      cursor = r?.next_cursor;
-      if (!cursor) break;
-    }
-    return out;
-  };
-  try {
-    const global = await pages({});
-    // An empty global list usually means the API wants an org, not that there are no bounties.
-    if (global.length || !orgs.length) return global;
-    throw new Error("global list returned nothing");
-  } catch (e) {
-    if (!orgs.length) throw new Error(`Algora list failed and ALGORA_ORGS is empty: ${e.message}`);
-    log(`Global list unusable (${e.message}); falling back to ${orgs.length} orgs.`);
-    const all = [];
-    let failed = 0;
-    for (const org of orgs) {
-      try { all.push(...(await pages({ org }))); }
-      catch (err) { failed++; log(`  ${org}: ${err.message}`); }
-    }
-    // Every org failing means Algora is unreachable, not that there are no bounties.
-    if (failed === orgs.length) throw new Error("Algora is unreachable: every request failed.");
-    return all;
-  }
 }
 
 export function githubClient(token, fetchImpl = fetch) {
@@ -68,10 +34,16 @@ export function githubClient(token, fetchImpl = fetch) {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (res.status === 404) return null;
-    if (!res.ok) throw new Error(`GitHub ${method} ${path} → ${res.status} ${await res.text()}`);
+    if (!res.ok) throw new Error(`GitHub ${method} ${path.split("?")[0]} → ${res.status} ${(await res.text()).slice(0, 200)}`);
     return res.status === 204 ? null : res.json();
   };
   return {
+    async searchBounties(lang) {
+      const q = `label:"${BOUNTY_LABEL}" is:open is:issue language:${lang}`;
+      const params = new URLSearchParams({ q, sort: "created", order: "desc", per_page: "100" });
+      const r = await call("GET", `/search/issues?${params}`);
+      return r?.items ?? [];
+    },
     async ourIssues(repo) {
       const out = [];
       for (let page = 1; page <= 20; page++) {
@@ -98,7 +70,18 @@ export function githubClient(token, fetchImpl = fetch) {
   };
 }
 
-/** Look at the bounty's GitHub issue to judge competition. Never fails the run. */
+/** Open bounty issues for each language, de-duplicated. A search failure fails the run. */
+export async function fetchBounties(gh, tech) {
+  const byId = new Map();
+  for (const lang of tech) {
+    for (const item of await gh.searchBounties(lang)) {
+      if (!byId.has(item.id)) byId.set(item.id, fromSearchItem(item, lang));
+    }
+  }
+  return [...byId.values()];
+}
+
+/** Read the bounty's issue: competition, state, and the reward the Algora bot posted. Never fails the run. */
 async function assess(gh, b) {
   const t = b.task ?? {};
   try {
@@ -106,6 +89,10 @@ async function assess(gh, b) {
       gh.targetIssue(t.repo_owner, t.repo_name, t.number),
       gh.targetComments(t.repo_owner, t.repo_name, t.number),
     ]);
+    if (rewardUsd(b) == null) {
+      const usd = rewardFromComments(comments);
+      if (usd != null) b.reward_formatted = `$${usd}`;
+    }
     const comp = competition(comments);
     const v = verdict(comp, {
       closed: issue?.state === "closed",
@@ -118,12 +105,12 @@ async function assess(gh, b) {
   }
 }
 
-export async function run({ cfg, list, gh, log = console.log }) {
+export async function run({ cfg, gh, log = console.log }) {
   if (!cfg.repo || !cfg.token) throw new Error("GITHUB_REPOSITORY and GITHUB_TOKEN must be set.");
 
-  const all = await fetchBounties(list, cfg.orgs, log);
+  const all = await fetchBounties(gh, cfg.tech);
   const wanted = filterBounties(all, cfg);
-  log(`Algora: ${all.length} active, ${wanted.length} match ${cfg.tech.join("/")} ≥ $${cfg.minUsd}.`);
+  log(`Search: ${all.length} open bounty issues, ${wanted.length} pass the filters.`);
 
   const existing = await gh.ourIssues(cfg.repo);
   const seen = seenIdsFrom(existing);
@@ -133,18 +120,22 @@ export async function run({ cfg, list, gh, log = console.log }) {
 
   const assessed = [];
   for (const b of fresh) assessed.push(await assess(gh, b));
-  const live = assessed.filter((r) => r.v.light !== "⚫");
+  // The reward is now known for most; drop the ones under the minimum.
+  const priced = assessed.filter((r) => { const usd = rewardUsd(r.b); return usd == null || usd >= cfg.minUsd; });
+  const live = priced.filter((r) => r.v.light !== "⚫");
+  log(`After reading the issues: ${live.length} worth announcing.`);
 
   if (cfg.dryRun) {
     for (const r of live) log(`DRY ${issueTitle(r.b, r.v)}`);
     return { created: 0, wouldCreate: existing.length ? live.length : 1 };
   }
+  if (!live.length) return { created: 0 };
 
   await gh.ensureLabel(cfg.repo);
 
   if (!existing.length) {
-    // First run: one digest instead of dozens of issues. Closed ones are marked seen too.
-    await gh.createIssue(cfg.repo, `📋 ${live.length} open bounties right now`, digestBody(assessed, cfg));
+    // First run: one digest instead of dozens of issues.
+    await gh.createIssue(cfg.repo, `📋 ${live.length} open bounties right now`, digestBody(live, cfg));
     log("First run: posted a digest.");
     return { created: 1 };
   }
@@ -160,10 +151,9 @@ export async function run({ cfg, list, gh, log = console.log }) {
 
 // Entry point when run directly (GitHub Actions).
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { algora } = await import("@algora/sdk");
   const cfg = config();
   // "::notice::" lines become annotations on the run page, readable without opening logs.
   const log = (msg) => console.log(process.env.GITHUB_ACTIONS ? `::notice::${msg}` : msg);
-  run({ cfg, list: (p) => algora.bounty.list.query(p), gh: githubClient(cfg.token), log })
-    .catch((e) => { console.error(e.message); process.exit(1); });
+  run({ cfg, gh: githubClient(cfg.token), log })
+    .catch((e) => { console.log(`::error::${e.message}`); process.exit(1); });
 }
