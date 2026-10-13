@@ -1,0 +1,32 @@
+name: Watch Algora bounties
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes (GitHub may delay runs a few minutes at busy times)
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: bounty-watcher
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: node src/run.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TECH: ${{ vars.TECH || 'typescript,javascript' }}
+          MIN_USD: ${{ vars.MIN_USD || '50' }}
+          ALGORA_ORGS: ${{ vars.ALGORA_ORGS || 'golemcloud,maybe-finance,mediar-ai,cap,omnigres,cal,tolgee,projectdiscovery,remotion,twentyhq,documenso,triggerdotdev,activepieces,highlight,zio' }}
