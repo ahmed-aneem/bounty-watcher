@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  rewardUsd, parseUsd, rewardFromComments, fromSearchItem, filterBounties,
+  rewardUsd, parseUsd, rewardFromComments, fromSearchItem, filterBounties, dropFarms,
   seenIdsFrom, competition, verdict, issueTitle, issueBody,
 } from "../src/core.mjs";
 import { run, fetchBounties, config } from "../src/run.mjs";
@@ -66,6 +66,18 @@ test("filter drops known-small, wrong-tech and old bounties; keeps unknown rewar
   ];
   const kept = filterBounties(items, { tech: ["typescript"], minUsd: 50, maxAgeDays: 30, now: NOW }).map((b) => b.id);
   assert.deepEqual(kept, ["keep", "unknown"]);
+});
+
+test("bounty farms are dropped by count and by blocklist", () => {
+  const at = (repo, n) => bounty(`${repo}-${n}`, { task: { repo_owner: repo.split("/")[0], repo_name: repo.split("/")[1], number: n, title: "t", url: "u" } });
+  const items = [
+    ...[1, 2, 3, 4].map((n) => at("farm/many", n)),
+    at("Bad/Blocked", 1),
+    at("real/project", 1), at("real/project", 2),
+  ];
+  const { kept, farms } = dropFarms(items, { maxPerRepo: 3, blockRepos: ["bad/blocked"] });
+  assert.deepEqual(kept.map((b) => b.task.repo_owner + "/" + b.task.repo_name), ["real/project", "real/project"]);
+  assert.deepEqual(farms.sort(), ["bad/blocked (1)", "farm/many (4)"]);
 });
 
 test("seen ids come from hidden markers, including digests", () => {

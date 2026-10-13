@@ -80,6 +80,21 @@ export function filterBounties(items, { tech, minUsd, maxAgeDays, now = Date.now
   });
 }
 
+const repoOf = (b) => `${b.task?.repo_owner}/${b.task?.repo_name}`.toLowerCase();
+
+/**
+ * Drop bounty farms: blocked repos, and repos with more open bounties than a real project posts.
+ * Farms attract swarms of AI agents and often never pay. Returns { kept, farms }.
+ */
+export function dropFarms(items, { maxPerRepo, blockRepos = [] }) {
+  const counts = new Map();
+  for (const b of items) counts.set(repoOf(b), (counts.get(repoOf(b)) ?? 0) + 1);
+  const blocked = new Set(blockRepos.map((r) => r.toLowerCase()));
+  const farms = [...counts].filter(([r, n]) => blocked.has(r) || n > maxPerRepo).map(([r, n]) => `${r} (${n})`);
+  const bad = new Set(farms.map((f) => f.split(" ")[0]));
+  return { kept: items.filter((b) => !bad.has(repoOf(b))), farms };
+}
+
 /** IDs already announced, read from hidden markers in issue bodies. */
 export function seenIdsFrom(issues) {
   const seen = new Set();

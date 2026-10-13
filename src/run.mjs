@@ -1,7 +1,7 @@
 // Finds new Algora bounties through GitHub search (Algora labels every bounty issue "💎 Bounty")
 // and opens one issue per new bounty in this repo. GitHub then notifies you by email and the mobile app.
 import {
-  filterBounties, seenIdsFrom, competition, verdict, rewardUsd,
+  dropFarms, filterBounties, seenIdsFrom, competition, verdict, rewardUsd,
   rewardFromComments, fromSearchItem, issueTitle, issueBody, digestBody,
 } from "./core.mjs";
 
@@ -15,6 +15,8 @@ export function config(env = process.env) {
     token: env.GITHUB_TOKEN ?? "",
     tech: (env.TECH || "typescript,javascript").split(",").map((s) => s.trim()).filter(Boolean),
     minUsd: Number(env.MIN_USD || 50),
+    maxPerRepo: Number(env.MAX_PER_REPO || 15),
+    blockRepos: (env.BLOCK_REPOS || "UnsafeLabs/Bounty-Hunters,SecureBananaLabs/bug-bounty").split(",").map((s) => s.trim()).filter(Boolean),
     maxAgeDays: Number(env.MAX_AGE_DAYS || 0),
     mention: env.MENTION || repo.split("/")[0] || "",
     dryRun: env.DRY_RUN === "1",
@@ -109,7 +111,9 @@ export async function run({ cfg, gh, log = console.log }) {
   if (!cfg.repo || !cfg.token) throw new Error("GITHUB_REPOSITORY and GITHUB_TOKEN must be set.");
 
   const all = await fetchBounties(gh, cfg.tech);
-  const wanted = filterBounties(all, cfg);
+  const { kept, farms } = dropFarms(all, cfg);
+  if (farms.length) log(`Skipped bounty farms: ${farms.join(", ")}.`);
+  const wanted = filterBounties(kept, cfg);
   log(`Search: ${all.length} open bounty issues, ${wanted.length} pass the filters.`);
 
   const existing = await gh.ourIssues(cfg.repo);
@@ -123,13 +127,16 @@ export async function run({ cfg, gh, log = console.log }) {
   // The reward is now known for most; drop the ones under the minimum.
   const priced = assessed.filter((r) => { const usd = rewardUsd(r.b); return usd == null || usd >= cfg.minUsd; });
   const live = priced.filter((r) => r.v.light !== "⚫");
-  log(`After reading the issues: ${live.length} worth announcing.`);
+  const tally = {};
+  for (const r of assessed) tally[r.v.reason.replace(/\d+/g, "N")] = (tally[r.v.reason.replace(/\d+/g, "N")] ?? 0) + 1;
+  log(`After reading the issues: ${live.length} worth announcing. Verdicts: ${Object.entries(tally).map(([k, n]) => `${n}× ${k}`).join("; ")}.`);
 
   if (cfg.dryRun) {
     for (const r of live) log(`DRY ${issueTitle(r.b, r.v)}`);
     return { created: 0, wouldCreate: seen.size ? live.length : 1 };
   }
-  if (!live.length) return { created: 0 };
+  // On the first run, post the digest even when empty so everything checked is recorded.
+  if (!live.length && seen.size) return { created: 0 };
 
   await gh.ensureLabel(cfg.repo);
 

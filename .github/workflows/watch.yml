@@ -27,3 +27,5 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TECH: ${{ vars.TECH || 'typescript,javascript' }}
           MIN_USD: ${{ vars.MIN_USD || '50' }}
+          MAX_PER_REPO: ${{ vars.MAX_PER_REPO || '15' }}
+          BLOCK_REPOS: ${{ vars.BLOCK_REPOS || 'UnsafeLabs/Bounty-Hunters,SecureBananaLabs/bug-bounty' }}

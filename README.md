@@ -28,6 +28,10 @@ Change these under **Settings → Secrets and variables → Actions → Variable
 |---|---|---|
 | `TECH` | `typescript,javascript` | Repository languages to search, comma-separated (GitHub's language names, e.g. `rust`, `python`) |
 | `MIN_USD` | `50` | Smallest reward worth a notification. Bounties whose reward can't be read are still shown as `$?`. |
+| `MAX_PER_REPO` | `15` | A repo with more open bounties than this is treated as a bounty farm and skipped |
+| `BLOCK_REPOS` | two known farms | Repos to always skip, as `owner/name`, comma-separated |
+
+Only bounties confirmed by Algora's own bot are announced. Anyone can label an issue "💎 Bounty"; some repos do it to attract swarms of AI agents, and hide data-harvesting instructions in the issue text.
 
 ## When a 🟢 issue arrives
 
