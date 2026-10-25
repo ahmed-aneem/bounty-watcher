@@ -10,8 +10,11 @@ export function rewardUsd(b) {
 
 /** First "$1,500"-style amount in a piece of text, or null. */
 export function parseUsd(text) {
-  const m = /\$\s?([\d,]+)(?:\.\d+)?/.exec(text ?? "");
-  return m ? Number(m[1].replace(/,/g, "")) : null;
+  const t = text ?? "";
+  const m = /(?:\$|USD[C]?\s*)\s*([\d,]+)(?:\.\d+)?|([\d,]+)(?:\.\d+)?\s*(?:\$|USD[C]?)/i.exec(t);
+  if (!m) return null;
+  const numStr = m[1] || m[2];
+  return numStr ? Number(numStr.replace(/,/g, "")) : null;
 }
 
 const isBot = (c) => c.user?.type === "Bot" || /\[bot\]$/i.test(c.user?.login ?? "");
